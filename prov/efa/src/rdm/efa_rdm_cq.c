@@ -521,6 +521,41 @@ static void efa_rdm_cq_handle_recv_completion(struct efa_ibv_cq *ibv_cq, struct 
 	uint32_t imm_data = 0;
 	bool has_imm_data = false;
 
+#if ENABLE_DEBUG
+	/* Record completion event: time=1 for first completion, time=2 for duplicate */
+	uint8_t event_time = (pkt_entry->debug_info_idx > 0) ? 1 : 2;
+	efa_rdm_pke_record_debug_info(pkt_entry,
+	                               pkt_entry->gen,
+	                               event_time,
+	                               efa_ibv_cq_wc_read_qp_num(ibv_cq),
+	                               0);  /* qkey not available in completion */
+	
+	/* Check for duplicate completion by examining debug_info_vec */
+	if (pkt_entry->debug_info_idx > 1) {
+		/* Look for previous completion event (time=1) */
+		int i, has_prev_completion = 0;
+		for (i = 0; i < DEBUG_INFO_SIZE && i < pkt_entry->debug_info_idx - 1; i++) {
+			if (pkt_entry->debug_info_vec[i].time == 1) {
+				has_prev_completion = 1;
+				break;
+			}
+		}
+		
+		if (has_prev_completion) {
+			EFA_WARN(FI_LOG_CQ,
+			         "DUPLICATE COMPLETION DETECTED:\n"
+			         "  pkt_entry=%p gen=%u\n"
+			         "  Debug info history:\n",
+			         pkt_entry, pkt_entry->gen);
+			
+			efa_rdm_pke_print_debug_info(pkt_entry);
+			
+			/* Return to ignore duplicate */
+			return;
+		}
+	}
+#endif
+
 	EFA_DBG(FI_LOG_CQ, "Processing receive completion for packet %p\n", pkt_entry);
 
 	if (pkt_entry->alloc_type == EFA_RDM_PKE_FROM_USER_RX_POOL) {

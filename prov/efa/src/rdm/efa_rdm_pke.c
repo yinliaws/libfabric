@@ -79,6 +79,11 @@ struct efa_rdm_pke *efa_rdm_pke_alloc(struct efa_rdm_ep *ep,
 	pkt_entry->payload_mr = NULL;
 	pkt_entry->peer = NULL;
 
+#if ENABLE_DEBUG
+	memset(pkt_entry->debug_info_vec, 0, sizeof(pkt_entry->debug_info_vec));
+	pkt_entry->debug_info_idx = 0;
+#endif
+
 	switch (alloc_type) {
 	case EFA_RDM_PKE_FROM_USER_RX_POOL:
 	case EFA_RDM_PKE_FROM_READ_COPY_POOL:
@@ -711,6 +716,15 @@ ssize_t efa_rdm_pke_recvv(struct efa_rdm_pke **pke_vec,
 		recv_wr = &ep->base_ep.efa_recv_wr_vec[i];
 		recv_wr->wr.wr_id = efa_rdm_pke_get_wr_id(pke_vec[i]);
 
+#if ENABLE_DEBUG
+		/* Record post event: time=0, gen=current, qpn and qkey from QP */
+		efa_rdm_pke_record_debug_info(pke_vec[i],
+		                               pke_vec[i]->gen,
+		                               0,  /* time=0 for POST */
+		                               ep->base_ep.qp->qp_num,
+		                               ep->base_ep.qp->qp_context->qkey);
+#endif
+
 		recv_wr->wr.num_sge = 1;
 		recv_wr->wr.sg_list = recv_wr->sge;
 		recv_wr->wr.sg_list[0].length = pke_vec[i]->pkt_size;
@@ -790,3 +804,50 @@ ssize_t efa_rdm_pke_user_recvv(struct efa_rdm_pke **pke_vec,
 
 	return err;
 }
+
+
+#if ENABLE_DEBUG
+/**
+ * @brief Record debug info event in packet entry
+ * 
+ * @param pkt_entry Packet entry
+ * @param gen Generation counter
+ * @param time Event type (0=post, 1=completion, 2=duplicate)
+ * @param qpn Queue pair number
+ * @param qkey Queue key
+ */
+void efa_rdm_pke_record_debug_info(struct efa_rdm_pke *pkt_entry,
+                                     uint8_t gen, uint8_t time,
+                                     uint16_t qpn, uint32_t qkey)
+{
+	uint8_t idx = pkt_entry->debug_info_idx % DEBUG_INFO_SIZE;
+	pkt_entry->debug_info_vec[idx].gen = gen;
+	pkt_entry->debug_info_vec[idx].time = time;
+	pkt_entry->debug_info_vec[idx].qpn = qpn;
+	pkt_entry->debug_info_vec[idx].qkey = qkey;
+	pkt_entry->debug_info_idx++;
+}
+
+/**
+ * @brief Print debug info history for packet entry
+ * 
+ * @param pkt_entry Packet entry
+ */
+void efa_rdm_pke_print_debug_info(struct efa_rdm_pke *pkt_entry)
+{
+	int i;
+	const char *event_name;
+	
+	for (i = 0; i < DEBUG_INFO_SIZE && i < pkt_entry->debug_info_idx; i++) {
+		struct debug_info *info = &pkt_entry->debug_info_vec[i];
+		event_name = (info->time == 0) ? "POST" :
+		             (info->time == 1) ? "COMPLETION" :
+		             (info->time == 2) ? "DUPLICATE" : "UNKNOWN";
+		
+		EFA_WARN(FI_LOG_EP_DATA,
+		         "    [%d] gen=%u time=%u qpn=%u qkey=%u (%s)\n",
+		         i, info->gen, info->time, info->qpn, info->qkey,
+		         event_name);
+	}
+}
+#endif

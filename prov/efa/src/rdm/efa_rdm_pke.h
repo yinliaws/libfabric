@@ -75,6 +75,24 @@ enum efa_rdm_pke_alloc_type {
  * is not registered (when it is unexpected or out-of-order). A new packet entry will be cloned
  * using endpoint's read_copy_pkt_pool, whose memory was registered.
  */
+
+#if ENABLE_DEBUG
+/**
+ * @brief Debug info for tracking packet lifecycle events
+ * 
+ * Used to diagnose "Packet already processed" errors by recording
+ * key events: post, completion, duplicate completion.
+ */
+#define DEBUG_INFO_SIZE 3
+
+struct debug_info {
+	uint8_t gen;      /**< Generation counter at this event */
+	uint8_t time;     /**< Event type: 0=post, 1=completion, 2=duplicate */
+	uint16_t qpn;     /**< Queue pair number */
+	uint32_t qkey;    /**< Queue key */
+};
+#endif
+
 struct efa_rdm_pke {
 	/**
 	 * entry to the linked list of outstanding/queued packet entries
@@ -183,6 +201,11 @@ struct efa_rdm_pke {
 	/**@brief Generation counter. It is incremented every time the packet is posted to rdma-core */
 	uint8_t gen;
 
+#if ENABLE_DEBUG
+	struct debug_info debug_info_vec[DEBUG_INFO_SIZE]; /**< Circular buffer of debug events */
+	uint8_t debug_info_idx; /**< Current index in debug_info_vec */
+#endif
+
 	/** @brief buffer that contains data that is going over wire
 	 *
 	 * @details
@@ -228,6 +251,14 @@ void efa_rdm_pke_release_rx(struct efa_rdm_pke *pkt_entry);
 void efa_rdm_pke_release_rx_list(struct efa_rdm_pke *pkt_entry);
 
 void efa_rdm_pke_release(struct efa_rdm_pke *pkt_entry);
+
+#if ENABLE_DEBUG
+void efa_rdm_pke_record_debug_info(struct efa_rdm_pke *pkt_entry,
+                                     uint8_t gen, uint8_t time,
+                                     uint16_t qpn, uint32_t qkey);
+
+void efa_rdm_pke_print_debug_info(struct efa_rdm_pke *pkt_entry);
+#endif
 
 void efa_rdm_pke_append(struct efa_rdm_pke *dst,
 			struct efa_rdm_pke *src);
