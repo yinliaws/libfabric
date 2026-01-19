@@ -19,7 +19,7 @@
 #define EFA_RDM_PKE_IN_PEER_OUTSTANDING_TX_PKTS	BIT_ULL(7) /**< this packet entry is in peer->outstanding_tx_pkts list */
 #define EFA_RDM_PKE_IN_OPE_QUEUED_PKTS	BIT_ULL(8) /**< this packet entry is in ope->queued_pkts list */
 
-#define EFA_RDM_PKE_ALIGNMENT		128
+#define EFA_RDM_PKE_ALIGNMENT		256
 
 /**
  * @enum for packet entry allocation type

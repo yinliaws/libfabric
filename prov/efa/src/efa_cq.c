@@ -751,6 +751,8 @@ ssize_t efa_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t count,
 {
 	struct efa_cq *efa_cq;
 	struct efa_ibv_cq *ibv_cq;
+       static int base_cq_count = 0;
+       if (++base_cq_count == 1) fprintf(stderr, "[DEBUG] Base EFA CQ readfrom called\n");
 	int err = -FI_EAGAIN;
 	size_t num_cqe = 0; /* Count of read entries */
 	int opcode;

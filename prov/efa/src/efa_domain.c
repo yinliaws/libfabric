@@ -281,6 +281,9 @@ int efa_domain_open(struct fid_fabric *fabric_fid, struct fi_info *info,
 	efa_domain->util_domain.domain_fid.mr = &efa_domain_mr_ops;
 
 	if (EFA_INFO_TYPE_IS_RDM(info)) {
+       fprintf(stderr, "[DEBUG] Domain open: info_type=%s, ep_type=%d\n", 
+               EFA_INFO_TYPE_IS_RDM(info) ? "RDM" : (EFA_INFO_TYPE_IS_DIRECT(info) ? "DIRECT" : "DGRAM"), 
+               info->ep_attr ? info->ep_attr->type : -1);
 		efa_domain->info_type = EFA_INFO_RDM;
 	} else if (EFA_INFO_TYPE_IS_DIRECT(info)) {
 		efa_domain->info_type = EFA_INFO_DIRECT;

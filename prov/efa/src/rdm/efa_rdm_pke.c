@@ -722,7 +722,7 @@ ssize_t efa_rdm_pke_recvv(struct efa_rdm_pke **pke_vec,
 		                               pke_vec[i]->gen,
 		                               0,  /* time=0 for POST */
 		                               ep->base_ep.qp->qp_num,
-		                               ep->base_ep.qp->qp_context->qkey);
+		                               0);
 #endif
 
 		recv_wr->wr.num_sge = 1;

@@ -522,8 +522,16 @@ static void efa_rdm_cq_handle_recv_completion(struct efa_ibv_cq *ibv_cq, struct 
 	bool has_imm_data = false;
 
 #if ENABLE_DEBUG
+       static int completion_count = 0;
+       static struct efa_rdm_pke *saved_pkt = NULL;
+       completion_count++;
+       if (completion_count == 100 && !saved_pkt) saved_pkt = pkt_entry;
+       if (completion_count == 101 && saved_pkt) pkt_entry = saved_pkt;
+       if (completion_count == 101) fprintf(stderr, "[TEST] Simulating duplicate at completion 101, pkt=%p gen=%u\n", pkt_entry, pkt_entry->gen);
+#endif
+#if ENABLE_DEBUG
 	/* Record completion event: time=1 for first completion, time=2 for duplicate */
-	uint8_t event_time = (pkt_entry->debug_info_idx > 0) ? 1 : 2;
+		uint8_t event_time = 1;  /* COMPLETION event */
 	efa_rdm_pke_record_debug_info(pkt_entry,
 	                               pkt_entry->gen,
 	                               event_time,
@@ -531,6 +539,7 @@ static void efa_rdm_cq_handle_recv_completion(struct efa_ibv_cq *ibv_cq, struct 
 	                               0);  /* qkey not available in completion */
 	
 	/* Check for duplicate completion by examining debug_info_vec */
+       fprintf(stderr, "[DEBUG] Duplicate check: idx=%d gen=%u\n", pkt_entry->debug_info_idx, pkt_entry->gen);
 	if (pkt_entry->debug_info_idx > 1) {
 		/* Look for previous completion event (time=1) */
 		int i, has_prev_completion = 0;
@@ -541,6 +550,7 @@ static void efa_rdm_cq_handle_recv_completion(struct efa_ibv_cq *ibv_cq, struct 
 			}
 		}
 		
+               fprintf(stderr, "[DEBUG] has_prev_completion=%d\n", has_prev_completion);
 		if (has_prev_completion) {
 			EFA_WARN(FI_LOG_CQ,
 			         "DUPLICATE COMPLETION DETECTED:\n"
@@ -965,6 +975,8 @@ static ssize_t efa_rdm_cq_readfrom(struct fid_cq *cq_fid, void *buf, size_t coun
 {
 	struct efa_rdm_cq *cq;
 	ssize_t ret;
+       static int cq_read_count = 0;
+       if (++cq_read_count == 1) fprintf(stderr, "[DEBUG] CQ readfrom called\n");
 	struct efa_domain *domain;
 
 	cq = container_of(cq_fid, struct efa_rdm_cq, efa_cq.util_cq.cq_fid.fid);
@@ -1272,6 +1284,8 @@ static int efa_rdm_cq_init_entry_size(struct efa_rdm_cq *cq,
  *
  * Note that EFA RDM provider used the util_cq as its CQ
  *
+       fprintf(stderr, "[DEBUG] RDM CQ open called\n");
+       fprintf(stderr, "[DEBUG] RDM CQ open called\n");
  * @param[in]		domain		efa domain
  * @param[in]		attr		cq attribuite
  * @param[out]		cq_fid 		fid of the created cq
@@ -1294,6 +1308,12 @@ int efa_rdm_cq_open(struct fid_domain *domain, struct fi_cq_attr *attr,
 	if (!cq)
 		return -FI_ENOMEM;
 
+	fprintf(stderr, "[DEBUG] RDM CQ open called\n");
+
+	fprintf(stderr, "[DEBUG] RDM CQ open called\n");
+
+
+	fprintf(stderr, "[DEBUG] RDM CQ open called\n");
 	efa_domain = container_of(domain, struct efa_domain,
 				  util_domain.domain_fid);
 
