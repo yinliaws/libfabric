@@ -427,7 +427,8 @@ int smr_select_proto(void **desc, size_t iov_count, bool vma_avail,
 				smr_proto_inline : smr_proto_inject;
 	}
 
-	*smr_flags |= SMR_RETURN_CMD;
+	if (op == ofi_op_read_req || (op_flags & FI_DELIVERY_COMPLETE))
+		*smr_flags |= SMR_RETURN_CMD;
 	return vma_avail ? smr_proto_iov: smr_proto_sar;
 }
 
@@ -514,14 +515,27 @@ static ssize_t smr_do_iov(struct smr_ep *ep, struct smr_region *peer_smr,
 {
 	struct smr_pend_entry *pend;
 
-	pend = ofi_buf_alloc(ep->pend_pool);
-	assert(pend);
-
-	cmd->hdr.tx_ctx = (uintptr_t) pend;
-	smr_format_tx_pend(pend, cmd, context, desc, iov, iov_count, op_flags);
+	if (smr_flags & SMR_RETURN_CMD) {
+		pend = ofi_buf_alloc(ep->pend_pool);
+		assert(pend);
+		cmd->hdr.tx_ctx = (uintptr_t) pend;
+		smr_format_tx_pend(pend, cmd, context, desc, iov, iov_count,
+				   op_flags);
+	} else {
+		pend = NULL;
+		cmd->hdr.tx_ctx = 0;
+	}
 
 	smr_generic_format(cmd, tx_id, rx_id, op, tag, data, smr_flags);
-	smr_format_iov(cmd, pend);
+
+	if (pend) {
+		smr_format_iov(cmd, pend);
+	} else {
+		cmd->hdr.proto = smr_proto_iov;
+		cmd->data.iov_count = iov_count;
+		cmd->hdr.size = total_len;
+		memcpy(cmd->data.iov, iov, sizeof(*iov) * iov_count);
+	}
 
 	if (smr_freestack_avail(smr_cmd_stack(ep->region)) <=
 	    smr_env.buffer_threshold)
