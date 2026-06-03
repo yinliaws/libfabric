@@ -111,7 +111,7 @@ static ssize_t smr_generic_sendmsg(struct smr_ep *ep, const struct iovec *iov,
 	proto = smr_select_proto(desc, iov_count, smr_vma_enabled(ep, peer_smr),
 	                         smr_ipc_valid(ep, peer_smr, tx_id, rx_id), op,
 				 total_len, op_flags, &smr_flags);
-	if (smr_flags & SMR_RETURN_CMD) {
+	if ((smr_flags & SMR_RETURN_CMD) && proto != smr_proto_iov) {
 		if (smr_freestack_isempty(smr_cmd_stack(ep->region))) {
 			smr_cmd_queue_discard(ce, pos);
 			ret = -FI_EAGAIN;
@@ -131,7 +131,7 @@ static ssize_t smr_generic_sendmsg(struct smr_ep *ep, const struct iovec *iov,
 				  iov, iov_count, total_len, context, cmd);
 	if (ret) {
 		smr_cmd_queue_discard(ce, pos);
-		if (smr_flags & SMR_RETURN_CMD)
+		if ((smr_flags & SMR_RETURN_CMD) && proto != smr_proto_iov)
 			smr_freestack_push(smr_cmd_stack(ep->region), cmd);
 		goto unlock;
 	}

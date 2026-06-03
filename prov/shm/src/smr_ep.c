@@ -513,6 +513,9 @@ static ssize_t smr_do_iov(struct smr_ep *ep, struct smr_region *peer_smr,
 {
 	struct smr_pend_entry *pend;
 
+		if (ep->slot_bitmap == ~0ULL)
+		return -FI_EAGAIN;
+
 	pend = ofi_buf_alloc(ep->pend_pool);
 	assert(pend);
 
@@ -521,6 +524,16 @@ static ssize_t smr_do_iov(struct smr_ep *ep, struct smr_region *peer_smr,
 
 	smr_generic_format(cmd, tx_id, rx_id, op, tag, data, smr_flags);
 	smr_format_iov(cmd, pend);
+
+	/* Allocate resp slot for out-of-order completion */
+	{
+		int slot = __builtin_ctzll(~ep->slot_bitmap);
+		ep->slot_bitmap |= (1ULL << slot);
+		ep->slot_pend[slot] = pend;
+		cmd->hdr.proto_data = slot;
+		smr_resp_slots(ep->region)[slot].status = 0;
+	}
+
 
 	if (smr_freestack_avail(smr_cmd_stack(ep->region)) <=
 	    smr_env.buffer_threshold)

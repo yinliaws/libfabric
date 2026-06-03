@@ -49,6 +49,9 @@ struct smr_ep {
 	struct ofi_bufpool	*cmd_ctx_pool;
 	struct ofi_bufpool	*unexp_buf_pool;
 	struct ofi_bufpool	*pend_pool;
+	uint64_t			slot_bitmap;
+	uint64_t			last_comp_count;
+	struct smr_pend_entry		*slot_pend[64];
 
 	struct slist		overflow_list;
 	struct dlist_entry	sar_list;

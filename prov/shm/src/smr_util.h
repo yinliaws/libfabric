@@ -191,6 +191,11 @@ static_assert(sizeof(struct smr_cmd) == SMR_CMD_SIZE,
 
 #define SMR_DIR		"/dev/shm/"
 #define SMR_NAME_MAX	256
+
+#define SMR_IOV_LIMIT_SLOTS	64
+struct smr_resp_slot {
+	uint64_t	status;
+} __attribute__((aligned(8)));
 #define SMR_PATH_MAX	(SMR_NAME_MAX + sizeof(SMR_DIR))
 
 enum smr_sar_status {
@@ -343,6 +348,17 @@ static inline const char *smr_name(struct smr_region *smr)
 {
 	return (const char *) smr + smr->name_offset;
 }
+
+static inline struct smr_resp_slot *smr_resp_slots(struct smr_region *smr)
+{
+	return (struct smr_resp_slot *)((char *) smr + smr->name_offset + SMR_NAME_MAX);
+}
+static inline uint64_t *smr_comp_count(struct smr_region *smr)
+{
+	return (uint64_t *)((char *) smr + smr->name_offset + SMR_NAME_MAX +
+		sizeof(struct smr_resp_slot) * SMR_IOV_LIMIT_SLOTS);
+}
+
 
 static inline struct smr_inject_buf *smr_get_inject_buf(struct smr_region *smr)
 {

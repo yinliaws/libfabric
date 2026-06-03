@@ -171,6 +171,24 @@ static int smr_progress_return_entry(struct smr_ep *ep, struct smr_cmd *cmd,
 
 static void smr_progress_return(struct smr_ep *ep)
 {
+	/* Out-of-order IOV completion via resp slots */
+	uint64_t cc = __atomic_load_n(smr_comp_count(ep->region), __ATOMIC_ACQUIRE);
+	if (cc != ep->last_comp_count) {
+		uint64_t pending = ep->slot_bitmap;
+		while (pending) {
+			int slot = __builtin_ctzll(pending);
+			if (smr_resp_slots(ep->region)[slot].status) {
+				struct smr_pend_entry *pend = ep->slot_pend[slot];
+				ep->slot_bitmap &= ~(1ULL << slot);
+				smr_complete_tx(ep, pend->comp_ctx,
+					pend->cmd->hdr.op, pend->comp_flags);
+				ofi_buf_free(pend);
+			}
+			pending &= ~(1ULL << slot);
+		}
+		ep->last_comp_count = cc;
+	}
+
 	struct smr_cmd *cmd;
 	struct smr_pend_entry *pending;
 	int ret;
@@ -736,8 +754,15 @@ static int smr_start_common(struct smr_ep *ep, struct smr_cmd *cmd,
 			return_cmd = false;
 	}
 
-	if (return_cmd)
-		smr_return_cmd(ep, cmd);
+	if (return_cmd) {
+		if (cmd->hdr.proto == smr_proto_iov) {
+			struct smr_region *peer_smr = smr_peer_region(ep, cmd->hdr.rx_id);
+			smr_resp_slots(peer_smr)[cmd->hdr.proto_data].status = 1;
+			__atomic_add_fetch(smr_comp_count(peer_smr), 1, __ATOMIC_RELEASE);
+		} else {
+			smr_return_cmd(ep, cmd);
+		}
+	}
 	return ret;
 }
 
@@ -1226,8 +1251,15 @@ static int smr_progress_cmd_rma(struct smr_ep *ep, struct smr_cmd *cmd)
 	}
 
 out:
-	if (return_cmd)
-		smr_return_cmd(ep, cmd);
+	if (return_cmd) {
+		if (cmd->hdr.proto == smr_proto_iov) {
+			struct smr_region *peer_smr = smr_peer_region(ep, cmd->hdr.rx_id);
+			smr_resp_slots(peer_smr)[cmd->hdr.proto_data].status = 1;
+			__atomic_add_fetch(smr_comp_count(peer_smr), 1, __ATOMIC_RELEASE);
+		} else {
+			smr_return_cmd(ep, cmd);
+		}
+	}
 	return ret;
 }
 

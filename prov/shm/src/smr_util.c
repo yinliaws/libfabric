@@ -116,7 +116,9 @@ size_t smr_calculate_size_offsets(size_t tx_count, size_t rx_count,
 	ep_name_offset = peer_data_offset + sizeof(struct smr_peer_data) *
 		SMR_MAX_PEERS;
 
-	total_size = ep_name_offset + SMR_NAME_MAX;
+	total_size = ep_name_offset + SMR_NAME_MAX +
+		     sizeof(struct smr_resp_slot) * SMR_IOV_LIMIT_SLOTS +
+		     sizeof(uint64_t);
 
 	if (cmd_offset)
 		*cmd_offset = cmd_queue_offset;
