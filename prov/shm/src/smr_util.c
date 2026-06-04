@@ -109,8 +109,7 @@ size_t smr_calculate_size_offsets(size_t tx_count, size_t rx_count,
 	ret_queue_offset = cmd_stack_offset +
 		freestack_size(sizeof(struct smr_cmd), tx_size);
 	ret_queue_offset = ofi_get_aligned_size(ret_queue_offset, 64);
-	sar_pool_offset = ret_queue_offset + sizeof(struct smr_return_queue) +
-		sizeof(struct smr_return_queue_entry) * tx_size;
+	sar_pool_offset = ret_queue_offset + sizeof(struct smr_fifo);
 	peer_data_offset = sar_pool_offset +
 		freestack_size(sizeof(struct smr_sar_buf), SMR_MAX_PEERS);
 	ep_name_offset = peer_data_offset + sizeof(struct smr_peer_data) *
@@ -287,7 +286,7 @@ int smr_create(const struct fi_provider *prov, const struct smr_attr *attr,
 	(*smr)->max_sar_buf_per_peer = SMR_BUF_BATCH_MAX;
 
 	smr_cmd_queue_init(smr_cmd_queue(*smr), rx_size, smr_cmd_init);
-	smr_return_queue_init(smr_return_queue(*smr), tx_size, NULL);
+	smr_fifo_init(smr_return_queue(*smr));
 
 	smr_freestack_init(smr_cmd_stack(*smr), tx_size,
 			   sizeof(struct smr_cmd));
