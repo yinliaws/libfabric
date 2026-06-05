@@ -49,6 +49,9 @@ struct smr_ep {
 	struct ofi_bufpool	*cmd_ctx_pool;
 	struct ofi_bufpool	*unexp_buf_pool;
 	struct ofi_bufpool	*pend_pool;
+	uint64_t			slot_bitmap;
+	uint64_t			last_comp_count;
+	struct smr_pend_entry		*slot_pend[SMR_IOV_LIMIT_SLOTS];
 
 	struct slist		overflow_list;
 	struct dlist_entry	sar_list;
@@ -124,6 +127,13 @@ static inline void smr_return_cmd(struct smr_ep *ep, struct smr_cmd *cmd)
 	struct smr_return_entry *queue_entry;
 	int ret;
 
+	if (cmd->hdr.op_flags & SMR_RESP_SLOT_RETURN) {
+		smr_resp_slots(peer_smr)[cmd->hdr.resv2].status = 1;
+		__atomic_add_fetch(smr_comp_count(peer_smr), 1,
+				   __ATOMIC_RELEASE);
+		return;
+	}
+
 	ret = smr_return_queue_next(smr_return_queue(peer_smr), &queue_entry,
 				    &pos);
 	if (ret == -FI_ENOENT) {
@@ -181,6 +191,7 @@ struct smr_pend_entry {
 	struct ofi_mr_entry		*ipc_entry;
 	ofi_hmem_async_event_t		async_event;
 	uint8_t				type;
+	uint8_t				op;
 	struct smr_cmd			*cmd;
 	struct iovec			iov[SMR_IOV_LIMIT];
 	size_t				iov_count;
@@ -256,21 +267,20 @@ void smr_format_tx_pend(struct smr_pend_entry *pend, struct smr_cmd *cmd,
 			uint64_t op_flags);
 void smr_generic_format(struct smr_cmd *cmd, int64_t tx_id, int64_t rx_id,
 			uint32_t op, uint64_t tag, uint64_t data,
-			uint8_t smr_flags);
+			uint64_t op_flags);
 size_t smr_copy_to_sar(struct smr_ep *ep, struct smr_region *smr,
 		       struct smr_pend_entry *pend);
 size_t smr_copy_from_sar(struct smr_ep *ep, struct smr_region *smr,
 		         struct smr_pend_entry *pend);
 int smr_select_proto(void **desc, size_t iov_count, bool cma_avail,
 		     bool ipc_valid, uint32_t op, uint64_t total_len,
-		     uint64_t op_flags, uint8_t *smr_flags);
+		     uint64_t op_flags);
 typedef ssize_t (*smr_send_func)(
 		struct smr_ep *ep, struct smr_region *peer_smr,
 		int64_t tx_id, int64_t rx_id, uint32_t op, uint64_t tag,
-		uint64_t data, uint64_t op_flags, uint8_t smr_flags,
-		struct ofi_mr **desc, const struct iovec *iov,
-		size_t iov_count, size_t total_len, void *context,
-		struct smr_cmd *cmd);
+		uint64_t data, uint64_t op_flags, struct ofi_mr **desc,
+		const struct iovec *iov, size_t iov_count, size_t total_len,
+		void *context, struct smr_cmd *cmd);
 extern smr_send_func smr_send_ops[smr_proto_max];
 
 int smr_write_err_comp(struct util_cq *cq, void *context,
@@ -281,9 +291,9 @@ int smr_complete_rx(struct smr_ep *ep, void *context, uint32_t op,
 		    uint64_t flags, size_t len, void *buf, int64_t id,
 		    uint64_t tag, uint64_t data);
 
-static inline uint64_t smr_rx_cq_flags(uint64_t rx_flags, uint8_t smr_flags)
+static inline uint64_t smr_rx_cq_flags(uint64_t rx_flags, uint16_t op_flags)
 {
-	if (smr_flags & SMR_REMOTE_CQ_DATA)
+	if (op_flags & SMR_REMOTE_CQ_DATA)
 		rx_flags |= FI_REMOTE_CQ_DATA;
 	return rx_flags;
 }

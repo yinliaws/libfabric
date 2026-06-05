@@ -35,8 +35,8 @@
 
 #include "ofi.h"
 #include "ofi_atomic_queue.h"
-#include "ofi_lock.h"
 #include "ofi_xpmem.h"
+#include <pthread.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +50,6 @@ struct smr_env {
 	size_t	max_gdrcopy_size;
 	int	use_xpmem;
 	size_t	buffer_threshold;
-	size_t	rma_fast_size;
 };
 
 extern struct smr_env smr_env;
@@ -76,7 +75,7 @@ extern struct smr_env smr_env;
 #define SMR_REMOTE_CQ_DATA	(1 << 0)
 #define SMR_BUFFER_RECV		(1 << 1)
 #define SMR_OP_ERROR		(1 << 2)
-#define SMR_RETURN_CMD		(1 << 3)
+#define SMR_RESP_SLOT_RETURN	(1 << 3)
 
 enum {
 	smr_proto_inline,	/* inline payload */
@@ -92,7 +91,7 @@ enum {
  *	entry		for internal use managing commands
  * 	op		type of op (ex. ofi_op_msg, defined in ofi_proto.h)
  * 	proto		smr protocol (ex. smr_proto_inline, defined above)
- * 	smr_flags	operation flags (ex. SMR_REMOTE_CQ_DATA, defined above)
+ * 	op_flags	operation flags (ex. SMR_REMOTE_CQ_DATA, defined above)
  * 	resv		reserved
  * 	tx_id		local shm_id of peer sending msg (unused by target)
  *	rx_id		remote shm_id of peer sending msg (unused by source)
@@ -107,7 +106,7 @@ enum {
 			(especially if your cpu does not have prefetching) so
 			that the first cache grab gets the lightweight protocol
 			fields.
- * 	proto_data	protocol specific data (ex. inject or SAR buf offset)
+ * 	resv2		reserved to keep hdr at 64 bytes
  *	tx_ctx		source side context (unused by target side)
  *	rx_ctx		target side context (unused by source side)
  */
@@ -115,7 +114,7 @@ struct smr_cmd_hdr {
 	uint64_t		entry;
 	uint8_t			op;
 	uint8_t			proto;
-	uint8_t			smr_flags;
+	uint8_t			op_flags;
 	uint8_t			resv[1];
 	int16_t			rx_id;
 	int16_t			tx_id;
@@ -129,7 +128,7 @@ struct smr_cmd_hdr {
 		};
 	};
 	//CACHE LINE HERE - See comment above
-	uint64_t		proto_data;
+	uint64_t		resv2;
 	uint64_t		tx_ctx;
 	uint64_t		rx_ctx;
 };
@@ -186,12 +185,16 @@ static_assert(sizeof(struct smr_cmd) == SMR_CMD_SIZE,
 
 #define SMR_INJECT_SIZE		4096
 #define SMR_COMP_INJECT_SIZE	(SMR_INJECT_SIZE / 2)
-#define SMR_RMA_FAST_SIZE	16384
 #define SMR_SAR_SIZE		32768
 
 #define SMR_DIR		"/dev/shm/"
 #define SMR_NAME_MAX	256
 #define SMR_PATH_MAX	(SMR_NAME_MAX + sizeof(SMR_DIR))
+
+#define SMR_IOV_LIMIT_SLOTS	64
+struct smr_resp_slot {
+	uint64_t	status;
+} __attribute__((aligned(8)));
 
 enum smr_sar_status {
 	SMR_SAR_FREE = 0,
@@ -256,8 +259,6 @@ struct smr_region {
 			uintptr_t		base_addr;
 
 			size_t			total_size;
-
-			ofi_spin_t		fs_lock;
 		};
 		uint8_t		pad[SMR_PREFETCH_SZ];
 	};
@@ -271,6 +272,7 @@ struct smr_region {
 		size_t			sar_pool_offset;
 		size_t			peer_data_offset;
 		size_t			name_offset;
+		size_t			resp_slots_offset;
 	} __attribute__ ((aligned(64)));
 };
 
@@ -323,9 +325,9 @@ static inline struct smr_freestack *smr_cmd_stack(struct smr_region *smr)
 {
 	return (struct smr_freestack *) ((char *) smr + smr->cmd_stack_offset);
 }
-static inline struct smr_freestack *smr_inject_pool(struct smr_region *smr)
+static inline struct smr_inject_buf *smr_inject_pool(struct smr_region *smr)
 {
-	return (struct smr_freestack *)
+	return (struct smr_inject_buf *)
 			((char *) smr + smr->inject_pool_offset);
 }
 static inline struct smr_return_queue *smr_return_queue(struct smr_region *smr)
@@ -346,32 +348,22 @@ static inline const char *smr_name(struct smr_region *smr)
 	return (const char *) smr + smr->name_offset;
 }
 
-static inline struct smr_inject_buf *smr_get_inject_buf(struct smr_region *smr)
+static inline struct smr_resp_slot *smr_resp_slots(struct smr_region *smr)
 {
-	struct smr_inject_buf *buf;
-	ofi_spin_lock(&smr->fs_lock);
-	if (!smr_freestack_isempty(smr_inject_pool(smr)))
-		buf = smr_freestack_pop(smr_inject_pool(smr));
-	else
-		buf = NULL;
-	ofi_spin_unlock(&smr->fs_lock);
-	return buf;
+	return (struct smr_resp_slot *)((char *) smr + smr->resp_slots_offset);
+}
+static inline uint64_t *smr_comp_count(struct smr_region *smr)
+{
+	return (uint64_t *)((char *) smr + smr->resp_slots_offset +
+		sizeof(struct smr_resp_slot) * SMR_IOV_LIMIT_SLOTS);
 }
 
-static inline void smr_return_inject_buf(struct smr_region *smr,
-					 struct smr_inject_buf *buf)
-{
-	ofi_spin_lock(&smr->fs_lock);
-	smr_freestack_push(smr_inject_pool(smr), buf);
-	ofi_spin_unlock(&smr->fs_lock);
-}
 
-static inline void smr_return_sar_buf_by_index(struct smr_region *smr,
-					       size_t index)
+static inline struct smr_inject_buf *smr_get_inject_buf(struct smr_region *smr,
+							struct smr_cmd *cmd)
 {
-	ofi_spin_lock(&smr->fs_lock);
-	smr_freestack_push_by_index(smr_sar_pool(smr), index);
-	ofi_spin_unlock(&smr->fs_lock);
+	return &smr_inject_pool(smr)[smr_freestack_get_index(smr_cmd_stack(smr),
+							     (char *) cmd)];
 }
 
 struct smr_attr {
@@ -385,7 +377,8 @@ size_t smr_calculate_size_offsets(size_t tx_count, size_t rx_count,
 				  size_t *cmd_offset, size_t *cs_offset,
 				  size_t *inject_offset, size_t *rq_offset,
 				  size_t *sar_offset, size_t *peer_offset,
-				  size_t *name_offset);
+				  size_t *name_offset,
+				  size_t *resp_slots_offset);
 void smr_cma_check(struct smr_region *region,
 		   struct smr_region *peer_region);
 void smr_cleanup(void);

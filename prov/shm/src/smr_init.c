@@ -43,7 +43,6 @@ struct smr_env smr_env = {
 	.max_gdrcopy_size = 3072,
 	.use_xpmem = false,
 	.buffer_threshold = 1,
-	.rma_fast_size = SMR_RMA_FAST_SIZE,
 };
 
 static void smr_init_env(void)
@@ -55,8 +54,6 @@ static void smr_init_env(void)
 	fi_param_get_bool(&smr_prov, "use_xpmem", &smr_env.use_xpmem);
 	fi_param_get_size_t(&smr_prov, "buffer_threshold",
 			    &smr_env.buffer_threshold);
-	fi_param_get_size_t(&smr_prov, "rma_fast_size",
-			    &smr_env.rma_fast_size);
 }
 
 static void smr_resolve_addr(const char *node, const char *service,
@@ -109,7 +106,7 @@ static int smr_shm_space_check(size_t tx_count, size_t rx_count)
 	shm_size_needed = num_of_core *
 			  smr_calculate_size_offsets(tx_count, rx_count,
 						     NULL, NULL, NULL, NULL,
-						     NULL, NULL, NULL);
+						     NULL, NULL, NULL, NULL);
 	err = statvfs(shm_fs, &stat);
 	if (err) {
 		FI_WARN(&smr_prov, FI_LOG_CORE,
@@ -222,11 +219,6 @@ SHM_INI
 	fi_param_define(&smr_prov, "use_xpmem", FI_PARAM_BOOL,
 			"Enable XPMEM over CMA when possible "
 			"(default: false)");
-	fi_param_define(&smr_prov, "rma_fast_size", FI_PARAM_SIZE_T,
-			"Maximum message size for sender-CMA RMA fast"
-			" path (default: %zu). Messages larger than this"
-			" use receiver-CMA for better pipelining.",
-			 SMR_RMA_FAST_SIZE);
 	fi_param_define(&smr_prov, "buffer_threshold", FI_PARAM_SIZE_T,
 			"When to start requesting forced unexpected messaging "
 			"buffering. (default: 1)");
