@@ -373,7 +373,8 @@ static int smr_format_sar(struct smr_ep *ep, struct smr_cmd *cmd,
 
 int smr_select_proto(void **desc, size_t iov_count, bool vma_avail,
 		     bool ipc_valid, uint32_t op, uint64_t total_len,
-		     uint64_t op_flags, uint8_t *smr_flags)
+		     uint64_t op_flags, uint8_t *smr_flags,
+		     const void *iov_base)
 {
 	struct ofi_mr *smr_desc;
 	enum fi_hmem_iface iface = FI_HMEM_SYSTEM;
@@ -428,7 +429,19 @@ int smr_select_proto(void **desc, size_t iov_count, bool vma_avail,
 	}
 
 	*smr_flags |= SMR_RETURN_CMD;
-	return vma_avail ? smr_proto_iov: smr_proto_sar;
+
+	/* The vma (CMA/xpmem) path copies through the peer's address space,
+	 * which is only valid for host memory. With no descriptor we do not
+	 * know what this buffer is, so classify it here rather than giving up
+	 * the vma path for the whole endpoint -- a host buffer would pay sar's
+	 * segmentation for nothing (16KB: 6.2us on sar vs 2.7us on iov). Only
+	 * reached above the inject size, so small transfers are untouched. */
+	if (vma_avail && FI_HMEM_SYSTEM == iface && !(desc && desc[0]) &&
+	    iov_base)
+		iface = ofi_get_hmem_iface(iov_base, NULL, NULL);
+
+	return (vma_avail && FI_HMEM_SYSTEM == iface) ? smr_proto_iov :
+						       smr_proto_sar;
 }
 
 static ssize_t smr_do_inline(struct smr_ep *ep, struct smr_region *peer_smr,
@@ -847,7 +860,10 @@ create_shm:
 				goto create_shm;
 		}
 
-		if (ep->util_ep.caps & FI_HMEM || smr_env.disable_cma) {
+		/* FI_HMEM no longer forfeits CMA for the whole endpoint;
+		 * smr_select_proto decides per operation and
+		 * smr_progress_iov handles a device destination. */
+		if (smr_env.disable_cma) {
 			smr_set_vma_cap(&ep->region->peer_vma_caps,
 					FI_SHM_P2P_CMA, false);
 			smr_set_vma_cap(&ep->region->self_vma_caps,

@@ -272,7 +272,8 @@ size_t smr_copy_from_sar(struct smr_ep *ep, struct smr_region *smr,
 		         struct smr_pend_entry *pend);
 int smr_select_proto(void **desc, size_t iov_count, bool cma_avail,
 		     bool ipc_valid, uint32_t op, uint64_t total_len,
-		     uint64_t op_flags, uint8_t *smr_flags);
+		     uint64_t op_flags, uint8_t *smr_flags,
+		     const void *iov_base);
 typedef ssize_t (*smr_send_func)(
 		struct smr_ep *ep, struct smr_region *peer_smr,
 		int64_t tx_id, int64_t rx_id, uint32_t op, uint64_t tag,

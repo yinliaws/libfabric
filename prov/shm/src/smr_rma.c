@@ -168,7 +168,8 @@ static ssize_t smr_generic_rma(
 
 	proto = smr_select_proto(desc, iov_count, smr_vma_enabled(ep, peer_smr),
 	                         smr_ipc_valid(ep, peer_smr, tx_id, rx_id), op,
-				 total_len, op_flags, &smr_flags);
+				 total_len, op_flags, &smr_flags,
+				 iov_count ? iov[0].iov_base : NULL);
 	if (smr_flags & SMR_RETURN_CMD) {
 		if (smr_freestack_isempty(smr_cmd_stack(ep->region))) {
 			smr_cmd_queue_discard(ce, pos);
