@@ -661,6 +661,11 @@ static int smr_ep_close(struct fid *fid)
 	if (ep->pend_pool)
 		ofi_bufpool_destroy(ep->pend_pool);
 
+	if (ep->hmem_stage_buf) {
+		(void) ofi_hmem_host_unregister(ep->hmem_stage_buf);
+		free(ep->hmem_stage_buf);
+	}
+
 	free((void *)ep->name);
 	free(ep);
 	return 0;

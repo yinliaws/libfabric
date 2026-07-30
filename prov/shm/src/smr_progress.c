@@ -271,6 +271,115 @@ static ssize_t smr_progress_inject(struct smr_ep *ep, struct smr_cmd *cmd,
 	return ret;
 }
 
+/* The vma (CMA/xpmem) path moves data through the peer's address space with
+ * host memory semantics, so it cannot target device memory. The sender picks
+ * the protocol from its own buffer and cannot know what the receiver posted,
+ * so a device destination is handled here.
+ */
+static enum fi_hmem_iface smr_iov_local_iface(struct ofi_mr **mr,
+					      struct iovec *iov,
+					      size_t iov_count)
+{
+	if (mr && mr[0])
+		return mr[0]->iface;
+
+	if (!iov_count || !iov[0].iov_base)
+		return FI_HMEM_SYSTEM;
+
+	return ofi_get_hmem_iface(iov[0].iov_base, NULL, NULL);
+}
+
+/* Registered with every active hmem iface, as smr_util.c does for the shm
+ * region itself. Unregistered, the device copy is a pageable transfer that the
+ * driver has to bounce through its own staging buffer.
+ */
+static int smr_get_hmem_stage_buf(struct smr_ep *ep, size_t len, void **buf)
+{
+	int ret;
+
+	if (OFI_LIKELY(ep->hmem_stage_buf != NULL &&
+		       ep->hmem_stage_len >= len)) {
+		*buf = ep->hmem_stage_buf;
+		return FI_SUCCESS;
+	}
+
+	if (ep->hmem_stage_buf) {
+		(void) ofi_hmem_host_unregister(ep->hmem_stage_buf);
+		free(ep->hmem_stage_buf);
+		ep->hmem_stage_buf = NULL;
+		ep->hmem_stage_len = 0;
+	}
+
+	ep->hmem_stage_buf = malloc(len);
+	if (!ep->hmem_stage_buf)
+		return -FI_ENOMEM;
+
+	ret = ofi_hmem_host_register(ep->hmem_stage_buf, len);
+	if (ret) {
+		/* Still usable unregistered, just slower. */
+		FI_WARN(&smr_prov, FI_LOG_EP_CTRL,
+			"unable to register shm staging buffer with iface\n");
+	}
+
+	ep->hmem_stage_len = len;
+	*buf = ep->hmem_stage_buf;
+	return FI_SUCCESS;
+}
+
+/* Copy through the MR-aware helpers rather than ofi_copy_*_hmem_iov: those
+ * ignore mr->hmem_data and always issue a cudaMemcpy, while ofi_copy_mr_iov
+ * honours OFI_HMEM_DATA_DEV_REG_HANDLE and moves the data with gdrcopy when the
+ * receiver registered its buffer. This is the same helper smr_copy_sar uses,
+ * and it is most of the cost difference between the two protocols.
+ */
+static ssize_t smr_progress_iov_hmem(struct smr_ep *ep, struct smr_cmd *cmd,
+				     struct ofi_mr **mr, struct iovec *iov,
+				     size_t iov_count)
+{
+	struct smr_region *peer_smr;
+	struct ofi_xpmem_client *xpmem;
+	struct iovec stage_iov;
+	size_t total = cmd->hdr.size;
+	ssize_t copy_ret;
+	void *stage;
+	int ret;
+
+	ret = smr_get_hmem_stage_buf(ep, total, &stage);
+	if (ret)
+		return ret;
+
+	peer_smr = smr_peer_region(ep, cmd->hdr.rx_id);
+	xpmem = &smr_peer_data(ep->region)[cmd->hdr.rx_id].xpmem;
+
+	stage_iov.iov_base = stage;
+	stage_iov.iov_len = total;
+
+	if (cmd->hdr.op == ofi_op_read_req) {
+		/* Data flows out of our buffer: gather it into host memory,
+		 * then let the vma path push it to the peer. */
+		copy_ret = ofi_copy_from_mr_iov(stage, total, mr, iov,
+						iov_count, 0);
+		if (copy_ret != (ssize_t) total)
+			return (copy_ret < 0) ? (int) copy_ret : -FI_EIO;
+
+		return ofi_shm_p2p_copy(ep->p2p_type, &stage_iov, 1,
+					cmd->data.iov, cmd->data.iov_count,
+					total, peer_smr->pid, true, xpmem);
+	}
+
+	ret = ofi_shm_p2p_copy(ep->p2p_type, &stage_iov, 1, cmd->data.iov,
+			       cmd->data.iov_count, total, peer_smr->pid,
+			       false, xpmem);
+	if (ret)
+		return ret;
+
+	copy_ret = ofi_copy_to_mr_iov(mr, iov, iov_count, 0, stage, total);
+	if (copy_ret != (ssize_t) total)
+		return (copy_ret < 0) ? (int) copy_ret : -FI_EIO;
+
+	return FI_SUCCESS;
+}
+
 static ssize_t smr_progress_iov(struct smr_ep *ep, struct smr_cmd *cmd,
 				struct fi_peer_rx_entry *rx_entry,
 				struct ofi_mr **mr, struct iovec *iov,
@@ -283,6 +392,14 @@ static ssize_t smr_progress_iov(struct smr_ep *ep, struct smr_cmd *cmd,
 	peer_smr = smr_peer_region(ep, cmd->hdr.rx_id);
 
 	xpmem = &smr_peer_data(ep->region)[cmd->hdr.rx_id].xpmem;
+
+	if (OFI_UNLIKELY(smr_iov_local_iface(mr, iov, iov_count) !=
+			 FI_HMEM_SYSTEM)) {
+		ret = smr_progress_iov_hmem(ep, cmd, mr, iov, iov_count);
+		if (ret)
+			cmd->hdr.smr_flags |= SMR_OP_ERROR;
+		return ret;
+	}
 
 	ret = ofi_shm_p2p_copy(ep->p2p_type, iov, iov_count, cmd->data.iov,
 			       cmd->data.iov_count, cmd->hdr.size,

@@ -56,6 +56,11 @@ struct smr_ep {
 	struct dlist_entry	unexp_cmd_list;
 	size_t			min_multi_recv_size;
 
+	/* Host-registered staging for device receives arriving on the vma
+	 * (CMA/xpmem) path. Grown on demand. */
+	void			*hmem_stage_buf;
+	size_t			hmem_stage_len;
+
 	int			ep_idx;
 	bool			user_setname;
 	enum ofi_shm_p2p_type	p2p_type;
