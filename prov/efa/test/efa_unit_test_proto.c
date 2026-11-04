@@ -207,6 +207,85 @@ void test_proto_eager_construct_pkes_single_pke(void **state)
 }
 
 /**
+ * @brief A send of a short unregistered host buffer followed by a registered
+ * buffer keeps the second one out of the packet's wiredata: the host bytes are
+ * copied in after the packet header and the rest is sent from the user's
+ * buffer, so a device payload after a host header is not copied either.
+ */
+void test_proto_eager_construct_pkes_host_head_then_registered_iov(void **state)
+{
+	struct efa_resource *resource = *state;
+	struct efa_unit_test_buff send_buff;
+	struct efa_rdm_ep *ep;
+	struct efa_rdm_peer *peer;
+	struct efa_rdm_ope *txe;
+	struct efa_rdm_pke *pke;
+	struct efa_rdm_proto *proto = NULL;
+	fi_addr_t peer_addr;
+	struct efa_ep_addr raw_addr = {0};
+	size_t raw_addr_len = sizeof(raw_addr);
+	struct fi_msg msg = {0};
+	struct iovec iov[2];
+	void *desc[2];
+	char head[24];
+	size_t hdr_size;
+	int err;
+	uint64_t pke_send_flags;
+
+	efa_unit_test_resource_construct_rdm_shm_disabled(resource);
+	efa_unit_test_buff_construct(&send_buff, resource, 256);
+	memset(head, 0x5a, sizeof(head));
+
+	ep = container_of(resource->ep, struct efa_rdm_ep,
+			  base_ep.util_ep.ep_fid);
+
+	assert_int_equal(
+		fi_getname(&resource->ep->fid, &raw_addr, &raw_addr_len), 0);
+	raw_addr.qpn = 1;
+	raw_addr.qkey = 0x1234;
+	assert_int_equal(
+		fi_av_insert(resource->av, &raw_addr, 1, &peer_addr, 0, NULL),
+		1);
+
+	peer = efa_rdm_ep_get_peer_explicit(ep, peer_addr);
+	peer->flags |= EFA_RDM_PEER_HANDSHAKE_RECEIVED;
+
+	iov[0].iov_base = head;
+	iov[0].iov_len = sizeof(head);
+	iov[1].iov_base = send_buff.buff;
+	iov[1].iov_len = send_buff.size;
+	desc[0] = NULL;
+	desc[1] = send_buff.mr;
+	efa_unit_test_construct_msg(&msg, iov, 2, peer_addr, NULL, 0, desc);
+
+	txe = ofi_buf_alloc(ep->base_ep.txe_pool);
+	assert_non_null(txe);
+	efa_rdm_proto_select_send_protocol(ep, peer, &msg, ofi_op_msg, 0, txe,
+					   &proto);
+	assert_ptr_equal(proto, &efa_rdm_proto_eager);
+	efa_rdm_proto_txe_fill(txe, ep, peer, &msg, ofi_op_msg, 0, 0, 0, proto);
+	txe->msg_id = peer->next_msg_id++;
+
+	err = efa_rdm_proto_eager.construct_tx_pkes(ep, txe, &pke_send_flags);
+	assert_int_equal(err, 0);
+	assert_int_equal(ep->send_pkt_entry_vec_size, 1);
+	pke = ep->send_pkt_entry_vec[0];
+	assert_non_null(pke);
+
+	/* the registered buffer is sent in place, the host bytes from wiredata */
+	assert_ptr_equal(pke->payload, send_buff.buff);
+	assert_int_equal(pke->payload_size, send_buff.size);
+	assert_int_equal(pke->pkt_size - pke->payload_size,
+			 efa_rdm_pke_get_req_hdr_size(pke) + sizeof(head));
+	hdr_size = pke->pkt_size - pke->payload_size - sizeof(head);
+	assert_memory_equal(pke->wiredata + hdr_size, head, sizeof(head));
+
+	efa_rdm_pke_release_tx(pke);
+	efa_rdm_txe_release(txe);
+	efa_unit_test_buff_destruct(&send_buff);
+}
+
+/**
  * @brief Test that eager send completion callback releases TXE and PKE
  * for non-DC messages.
  */

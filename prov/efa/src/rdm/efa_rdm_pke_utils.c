@@ -17,6 +17,59 @@
 #include "efa_rdm_pke_req.h"
 #include "efa_rdm_tracepoint.h"
 
+/*
+ * Whether the iovs of an operation are in memory of more than one kind, so
+ * that a copy from them cannot use the interface of the first.
+ */
+static inline bool efa_rdm_ope_iovs_mix_iface(struct efa_rdm_ope *ope)
+{
+	enum fi_hmem_iface first, iface;
+	size_t i;
+
+	if (ope->iov_count < 2)
+		return false;
+	first = ope->desc[0] ? ((struct efa_rdm_mr *)ope->desc[0])->efa_mr.iface : FI_HMEM_SYSTEM;
+	for (i = 1; i < ope->iov_count; i++) {
+		iface = ope->desc[i] ? ((struct efa_rdm_mr *)ope->desc[i])->efa_mr.iface : FI_HMEM_SYSTEM;
+		if (iface != first)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Copy data_size bytes from segment_offset of the operation's iovs into the
+ * packet, each iov with the interface of its own memory registration.
+ */
+static ssize_t efa_rdm_pke_copy_from_mixed_iov(struct efa_rdm_pke *pke,
+					       struct efa_rdm_ope *ope,
+					       size_t payload_offset,
+					       size_t segment_offset,
+					       size_t data_size)
+{
+	struct efa_rdm_mr *mr;
+	size_t i, len, copied = 0;
+	int ret;
+
+	for (i = 0; i < ope->iov_count && copied < data_size; i++) {
+		if (segment_offset >= ope->iov[i].iov_len) {
+			segment_offset -= ope->iov[i].iov_len;
+			continue;
+		}
+		len = MIN(ope->iov[i].iov_len - segment_offset, data_size - copied);
+		mr = ope->desc[i];
+		ret = ofi_copy_from_hmem(mr ? mr->efa_mr.iface : FI_HMEM_SYSTEM,
+					 mr ? mr->device : 0,
+					 pke->wiredata + payload_offset + copied,
+					 (char *)ope->iov[i].iov_base + segment_offset, len);
+		if (ret)
+			return ret;
+		copied += len;
+		segment_offset = 0;
+	}
+	return copied;
+}
+
 /**
  * @brief initialize the payload, payload_size, payload_mr and pkt_size of an outgoing packet
  *
@@ -91,8 +144,47 @@ ssize_t efa_rdm_pke_init_payload_from_ope(struct efa_rdm_pke *pke,
 		return 0;
 	}
 
-	copied = efa_rdm_pke_copy_from_hmem_iov(
-		iov_mr, pke, ope, payload_offset, segment_offset, data_size);
+	/*
+	 * The data starts in a host iov that ends before it does and continues
+	 * in the next iov, e.g. a caller's header in host memory followed by its
+	 * payload in device memory. Copy the host bytes into the packet after
+	 * the packet header and send the rest straight from the next iov: the
+	 * packet then still takes two SGEs, wiredata and payload, and device
+	 * memory is sent without a copy.
+	 */
+	if (tx_iov_index + 1 < ope->iov_count && !(ope->fi_flags & FI_INJECT) &&
+	    (!iov_mr || iov_mr->efa_mr.iface == FI_HMEM_SYSTEM)) {
+		size_t head = ope->iov[tx_iov_index].iov_len - tx_iov_offset;
+		struct efa_rdm_mr *next_mr = ope->desc[tx_iov_index + 1];
+
+		if (head < data_size && next_mr &&
+		    data_size - head <= ope->iov[tx_iov_index + 1].iov_len) {
+			ret = efa_rdm_ep_use_p2p_for_mr(pke->ep, &next_mr->efa_mr);
+			if (ret < 0)
+				return ret;
+			if (ret) {
+				memcpy(pke->wiredata + payload_offset,
+				       (char *)ope->iov[tx_iov_index].iov_base + tx_iov_offset,
+				       head);
+				pke->payload = ope->iov[tx_iov_index + 1].iov_base;
+				pke->payload_size = data_size - head;
+				pke->payload_mr = ope->desc[tx_iov_index + 1];
+				pke->pkt_size = payload_offset + data_size;
+				return 0;
+			}
+		}
+	}
+
+	if (efa_rdm_ope_iovs_mix_iface(ope)) {
+		ssize_t n = efa_rdm_pke_copy_from_mixed_iov(pke, ope, payload_offset,
+							    segment_offset, data_size);
+		if (n < 0)
+			return n;
+		copied = n;
+	} else {
+		copied = efa_rdm_pke_copy_from_hmem_iov(
+			iov_mr, pke, ope, payload_offset, segment_offset, data_size);
+	}
 
 	assert(copied == data_size);
 	pke->payload = pke->wiredata + payload_offset;
